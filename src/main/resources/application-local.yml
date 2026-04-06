@@ -27,11 +27,11 @@ management:
     health:
       show-details: always
 
-# redis 에 대해서 현재는 주석처리
-# data:
-#    redis:
-#      host: localhost
-#      port: 6379
+  data:
+    redis:
+      host: localhost
+      port: 6379
+
 logging:
   level:
     org.springframework.boot.actuate: INFO

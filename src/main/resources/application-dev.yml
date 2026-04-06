@@ -26,10 +26,10 @@ management:
     health:
       show-details: always
 
-#  data:
-#    redis:
-#      host: dev-redis
-#      port: 6379
+  data:
+    redis:
+      host: ${REDIS_HOST}
+      port: ${REDIS_PORT}
 
 logging:
   level:

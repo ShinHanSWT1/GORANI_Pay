@@ -1,6 +1,22 @@
+server:
+  port: 8083
+
+info:
+  app:
+    name: EcoDrive-pay
+    description: Payment service for GORANI
+    version: 0.0.1
+
+logging:
+  level:
+    org.springframework.security.web: trace
+    com.gorani.ddeonam: debug
+    org.hibernate.SQL: debug
+    org.hibernate.orm.jdbc.bind: trace
+
 spring:
   application:
-    name: gorani_pay
+    name: EcoDrive_Pay
 
   jpa:
     open-in-view: false
@@ -14,8 +30,18 @@ spring:
   main:
     banner-mode: console
 
-server:
-  port: 8070
+app:
+  cdn-url: https://${AWS_BUCKET_NAME}.s3.ap-northeast-2.amazonaws.com
+
+cloud:
+  aws:
+    credentials:
+      access-key: ${AWS_ACCESS_KEY}
+      secret-key: ${AWS_SECRET_KEY}
+    region:
+      static: ap-northeast-2
+    s3:
+      bucket: ${AWS_BUCKET_NAME}
 
 management:
   endpoints:
@@ -24,17 +50,3 @@ management:
   endpoint:
     health:
       show-components: always
-
-info:
-  app:
-    name: gorani-pay
-    description: Payment service for GORANI
-    version: 0.0.1
-
-logging:
-  level:
-    org.springframework.security.web: trace
-    com.gorani.ddeonam: debug
-    org.hibernate.SQL: debug
-    org.hibernate.orm.jdbc.bind: trace
-
