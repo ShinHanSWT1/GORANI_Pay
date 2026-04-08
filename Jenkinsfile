@@ -36,6 +36,14 @@ pipeline {
     }
 
     stages {
+        stage('0. Harbor Login') {
+            steps {
+                 withCredentials([usernamePassword(credentialsId: HARBOR_CREDENTIALS_ID, usernameVariable: 'USER', passwordVariable: 'PASS')]) {
+                    sh "podman login ${REGISTRY} -u ${USER} -p ${PASS} --tls-verify=false" 
+                }
+            }
+        }
+        
         stage('1. Checkout') {
             steps {
                 git branch: "${GIT_BRANCH}", url: "${GIT_URL}"
