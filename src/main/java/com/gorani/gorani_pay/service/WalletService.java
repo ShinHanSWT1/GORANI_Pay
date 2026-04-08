@@ -12,6 +12,7 @@ import java.time.LocalDateTime;
 
 @Service
 @RequiredArgsConstructor
+@Transactional
 public class WalletService {
 
     private final PayAccountRepository accountRepository;
