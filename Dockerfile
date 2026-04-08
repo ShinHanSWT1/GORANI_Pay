@@ -1,5 +1,5 @@
 ## Build Stage ##
-FROM docker.io/library/eclipse-temurin:17-jdk AS builder
+FROM registry-gorani.lab.terminal-lab.kr/base/eclipse-temurin:17-jdk AS builder
 
 WORKDIR /app
 
@@ -19,7 +19,7 @@ RUN chmod +x ./gradlew
 RUN ./gradlew clean bootJar -x test
 
 ## Run Stage ##
-FROM docker.io/library/eclipse-temurin:17-jre
+FROM registry-gorani.lab.terminal-lab.kr/base/eclipse-temurin:17-jre
 
 WORKDIR /app
 
