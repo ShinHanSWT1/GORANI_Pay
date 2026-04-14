@@ -1,6 +1,6 @@
-package com.gorani.gorani_pay.config; // 기존 패키지명 유지
+package com.gorani.gorani_pay.config;
 
-import com.gorani.gorani_pay.security.JwtAuthenticationFilter;
+import com.gorani.gorani_pay.security.InternalTokenFilter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -15,11 +15,10 @@ import java.util.List;
 @Configuration
 public class SecurityConfig {
 
-    // 1. 기존 InternalTokenFilter 대신 JwtAuthenticationFilter를 주입받습니다.
-    private final JwtAuthenticationFilter jwtAuthenticationFilter;
+    private final InternalTokenFilter internalTokenFilter;
 
-    public SecurityConfig(JwtAuthenticationFilter jwtAuthenticationFilter) {
-        this.jwtAuthenticationFilter = jwtAuthenticationFilter;
+    public SecurityConfig(InternalTokenFilter internalTokenFilter) {
+        this.internalTokenFilter = internalTokenFilter;
     }
 
     @Bean
@@ -45,8 +44,7 @@ public class SecurityConfig {
                         .requestMatchers("/pay/**").authenticated()
                         .anyRequest().denyAll()
                 )
-                // 3. 문지기 교체: 인증 필터 앞에 우리의 JWT 필터를 세워둡니다.
-                .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
+                .addFilterBefore(internalTokenFilter, UsernamePasswordAuthenticationFilter.class);
 
         return http.build();
     }

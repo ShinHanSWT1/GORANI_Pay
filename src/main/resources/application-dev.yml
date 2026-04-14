@@ -36,5 +36,7 @@ logging:
     org.springframework.boot.actuate: INFO
 
 app:
+  security:
+    internal-token: ${PAY_INTERNAL_TOKEN:}
   upload:
     path: /app/uploads
