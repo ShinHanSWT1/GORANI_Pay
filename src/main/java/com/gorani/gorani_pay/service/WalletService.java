@@ -13,6 +13,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.YearMonth;
 import java.util.List;
 
 @Service
@@ -25,9 +27,22 @@ public class WalletService {
     private final PayLedgerRepository ledgerRepository;
     private final LedgerService ledgerService;
 
-    public PayAccount getAccount(Long userId) {
-        return accountRepository.findByPayUserId(userId)
-                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Account not found"));
+    public PayAccount getAccount(Long payUserId) {
+        PayAccount account = accountRepository.findByPayUserId(payUserId)
+                .orElseGet(() -> {
+                    PayAccount newAccount = new PayAccount();
+                    newAccount.setPayUserId(payUserId);
+                    newAccount.setBalance(0);
+                    newAccount.setPoints(0L);
+
+                    // DB에 저장하고 바로 반환
+                    return accountRepository.save(newAccount);
+                });
+
+        // 이후 로직은 동일
+        Long monthlyUsage = getMonthlyUsage(account.getId());
+        account.setMonthUsage(monthlyUsage);
+        return account;
     }
 
     public List<PayTransaction> getTransactions(Long userId) {
@@ -98,5 +113,12 @@ public class WalletService {
         );
 
         return account;
+    }
+
+    public Long getMonthlyUsage(Long payAccountId) {
+        LocalDateTime startOfMonth = java.time.YearMonth.now().atDay(1).atStartOfDay();
+        LocalDateTime endOfMonth = java.time.YearMonth.now().atEndOfMonth().atTime(java.time.LocalTime.MAX);
+
+        return transactionRepository.sumUsageByPeriod(payAccountId, startOfMonth, endOfMonth);
     }
 }
