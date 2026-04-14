@@ -38,29 +38,14 @@ public class WalletService {
     // 결제 사용자 저장소
     private final PayUserRepository payUserRepository;
 
-    public PayAccount getAccount(Long payUserId) {
-        PayAccount account = accountRepository.findByPayUserId(payUserId)
-                .orElseGet(() -> {
-                    PayAccount newAccount = new PayAccount();
-                    newAccount.setPayUserId(payUserId);
-                    newAccount.setBalance(0);
-                    newAccount.setPoints(0L);
-
-                    // DB에 저장하고 바로 반환
-                    return accountRepository.save(newAccount);
-                });
-
-        // 이후 로직은 동일
-        Long monthlyUsage = getMonthlyUsage(account.getId());
-        account.setMonthUsage(monthlyUsage);
-        return account;
-    // 계좌 생성 기능
+    // 계좌 생성
     public PayAccount createAccount(CreateAccountRequest request) {
         PayUser payUser = payUserRepository.findByExternalUserId(request.getExternalUserId())
                 .orElseGet(() -> createPayUser(request));
 
         PayAccount existing = accountRepository.findByPayUserId(payUser.getId()).orElse(null);
         if (existing != null) {
+            existing.setMonthUsage(getMonthlyUsage(existing.getId()));
             return existing;
         }
 
@@ -70,41 +55,45 @@ public class WalletService {
         account.setBankCode(normalizeBlankToNull(request.getBankCode()));
         account.setAccountNumber(resolveAccountNumber(request.getAccountNumber()));
         account.setBalance(0);
+        account.setPoints(0L);
         account.setStatus("ACTIVE");
         account.setCreatedAt(LocalDateTime.now());
         account.setUpdatedAt(LocalDateTime.now());
 
-        return accountRepository.save(account);
+        PayAccount saved = accountRepository.save(account);
+        saved.setMonthUsage(0L);
+        return saved;
     }
 
-    // 계좌 조회 기능
-    public PayAccount getAccount(Long userId) {
-        return accountRepository.findByPayUserId(userId)
-                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Account not found"));
+    // 계좌 조회
+    public PayAccount getAccount(Long payUserId) {
+        PayAccount account = findAccountOrThrow(payUserId);
+        account.setMonthUsage(getMonthlyUsage(account.getId()));
+        return account;
     }
 
-    // 외부 사용자 식별자 기반 계좌 조회 기능
+    // 외부 사용자 연계키 기반 계좌 조회
     public PayAccount getAccountByExternalUserId(Long externalUserId) {
         PayUser payUser = payUserRepository.findByExternalUserId(externalUserId)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Pay user not found"));
         return getAccount(payUser.getId());
     }
 
-    // 거래내역 조회 기능
-    public List<PayTransaction> getTransactions(Long userId) {
-        PayAccount account = getAccount(userId);
+    // 거래내역 조회
+    public List<PayTransaction> getTransactions(Long payUserId) {
+        PayAccount account = findAccountOrThrow(payUserId);
         return transactionRepository.findByPayAccountIdOrderByIdDesc(account.getId());
     }
 
-    // 원장내역 조회 기능
-    public List<PayLedger> getLedgerEntries(Long userId) {
-        PayAccount account = getAccount(userId);
+    // 원장내역 조회
+    public List<PayLedger> getLedgerEntries(Long payUserId) {
+        PayAccount account = findAccountOrThrow(payUserId);
         return ledgerRepository.findByPayAccountIdOrderByIdDesc(account.getId());
     }
 
-    // 충전 기능
-    public PayAccount charge(Long userId, Integer amount) {
-        PayAccount account = getAccount(userId);
+    // 충전
+    public PayAccount charge(Long payUserId, Integer amount) {
+        PayAccount account = findAccountOrThrow(payUserId);
 
         try {
             account.addBalance(amount);
@@ -130,12 +119,13 @@ public class WalletService {
                 account.getId()
         );
 
+        account.setMonthUsage(getMonthlyUsage(account.getId()));
         return account;
     }
 
-    // 출금 기능
-    public PayAccount withdraw(Long userId, Integer amount) {
-        PayAccount account = getAccount(userId);
+    // 출금
+    public PayAccount withdraw(Long payUserId, Integer amount) {
+        PayAccount account = findAccountOrThrow(payUserId);
 
         try {
             account.deductBalance(amount);
@@ -161,15 +151,26 @@ public class WalletService {
                 account.getId()
         );
 
+        account.setMonthUsage(getMonthlyUsage(account.getId()));
         return account;
     }
 
+    // 월 사용액 조회 (PAYMENT 거래만 집계)
     public Long getMonthlyUsage(Long payAccountId) {
-        LocalDateTime startOfMonth = java.time.YearMonth.now().atDay(1).atStartOfDay();
-        LocalDateTime endOfMonth = java.time.YearMonth.now().atEndOfMonth().atTime(java.time.LocalTime.MAX);
+        LocalDateTime startOfMonth = YearMonth.now().atDay(1).atStartOfDay();
+        LocalDateTime endOfMonth = YearMonth.now().atEndOfMonth().atTime(LocalTime.MAX);
 
-        return transactionRepository.sumUsageByPeriod(payAccountId, startOfMonth, endOfMonth);
-    // 결제 사용자 생성 기능
+        Long usage = transactionRepository.sumUsageByPeriod(payAccountId, startOfMonth, endOfMonth);
+        return usage == null ? 0L : usage;
+    }
+
+    // 계좌 조회 공통
+    private PayAccount findAccountOrThrow(Long payUserId) {
+        return accountRepository.findByPayUserId(payUserId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Account not found"));
+    }
+
+    // 결제 사용자 생성
     private PayUser createPayUser(CreateAccountRequest request) {
         PayUser payUser = new PayUser();
         payUser.setExternalUserId(request.getExternalUserId());
@@ -181,7 +182,7 @@ public class WalletService {
         return payUserRepository.save(payUser);
     }
 
-    // 계좌번호 결정 기능
+    // 계좌번호 결정
     private String resolveAccountNumber(String accountNumber) {
         String normalized = normalizeBlankToNull(accountNumber);
         if (normalized != null) {
@@ -190,7 +191,7 @@ public class WalletService {
         return "GP-" + System.currentTimeMillis() + "-" + ThreadLocalRandom.current().nextInt(1000, 10000);
     }
 
-    // 공백 문자열 정규화 기능
+    // 공백 문자열 정리
     private String normalizeBlankToNull(String value) {
         if (value == null) {
             return null;
