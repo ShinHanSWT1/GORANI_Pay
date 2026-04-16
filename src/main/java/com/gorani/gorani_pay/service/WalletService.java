@@ -13,7 +13,9 @@ import com.gorani.gorani_pay.repository.PayLedgerRepository;
 import com.gorani.gorani_pay.repository.PayTransactionRepository;
 import com.gorani.gorani_pay.repository.PayUserRepository;
 import lombok.RequiredArgsConstructor;
-import org.flywaydb.core.api.ErrorCode;
+import lombok.extern.slf4j.Slf4j;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -23,8 +25,10 @@ import java.time.LocalTime;
 import java.time.YearMonth;
 import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
 
 // 지갑 도메인 서비스
+@Slf4j
 @Service
 @RequiredArgsConstructor
 @Transactional
@@ -42,6 +46,10 @@ public class WalletService {
     private final PayUserRepository payUserRepository;
     // Toss PG 연동
     private final TossPaymentClient tossPaymentClient;
+
+    // Redis 분산 락을 위한 클라이언트
+    private final RedissonClient redissonClient;
+    private static final String LOCK_KEY_PREFIX = "lock:wallet:";
 
     // 계좌 생성
     public PayAccount createAccount(CreateAccountRequest request) {
@@ -97,67 +105,76 @@ public class WalletService {
     }
 
     // 충전
+    @Transactional
     public PayAccount charge(Long payUserId, Integer amount) {
-        PayAccount account = findAccountOrThrow(payUserId);
-
+        RLock lock = redissonClient.getLock(LOCK_KEY_PREFIX + payUserId);
         try {
+            // 5초 동안 락 획득 시도, 락 획득 후 10초간 유지
+            if (!lock.tryLock(5, 10, TimeUnit.SECONDS)) {
+                throw new ApiException(HttpStatus.TOO_MANY_REQUESTS, "결제가 진행 중입니다. 잠시 후 다시 시도해 주세요.");
+            }
+
+            PayAccount account = findAccountOrThrow(payUserId);
             account.addBalance(amount);
-        } catch (IllegalArgumentException ex) {
-            throw new ApiException(HttpStatus.BAD_REQUEST, ex.getMessage());
+
+            PayTransaction tx = new PayTransaction();
+            tx.setPayAccountId(account.getId());
+            tx.setTransactionType("CHARGE");
+            tx.setDirection("CREDIT");
+            tx.setAmount(amount);
+            tx.setOccurredAt(LocalDateTime.now());
+            transactionRepository.save(tx);
+
+            ledgerService.record(tx.getId(), account.getId(), "CREDIT", amount,
+                    account.getBalance(), "CHARGE", account.getId());
+
+            account.setMonthUsage(getMonthlyUsage(account.getId()));
+            return account;
+
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "작업 중 오류가 발생했습니다.");
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock(); // 작업 완료 후 반드시 락 해제
+            }
         }
-
-        PayTransaction tx = new PayTransaction();
-        tx.setPayAccountId(account.getId());
-        tx.setTransactionType("CHARGE");
-        tx.setDirection("CREDIT");
-        tx.setAmount(amount);
-        tx.setOccurredAt(LocalDateTime.now());
-        transactionRepository.save(tx);
-
-        ledgerService.record(
-                tx.getId(),
-                account.getId(),
-                "CREDIT",
-                amount,
-                account.getBalance(),
-                "CHARGE",
-                account.getId()
-        );
-
-        account.setMonthUsage(getMonthlyUsage(account.getId()));
-        return account;
     }
 
     // 출금
+    @Transactional
     public PayAccount withdraw(Long payUserId, Integer amount) {
-        PayAccount account = findAccountOrThrow(payUserId);
-
+        RLock lock = redissonClient.getLock(LOCK_KEY_PREFIX + payUserId);
         try {
+            if (!lock.tryLock(5, 10, TimeUnit.SECONDS)) {
+                throw new ApiException(HttpStatus.TOO_MANY_REQUESTS, "다른 요청이 처리 중입니다.");
+            }
+
+            PayAccount account = findAccountOrThrow(payUserId);
             account.deductBalance(amount);
-        } catch (IllegalArgumentException ex) {
-            throw new ApiException(HttpStatus.BAD_REQUEST, ex.getMessage());
+
+            PayTransaction tx = new PayTransaction();
+            tx.setPayAccountId(account.getId());
+            tx.setTransactionType("WITHDRAW");
+            tx.setDirection("DEBIT");
+            tx.setAmount(amount);
+            tx.setOccurredAt(LocalDateTime.now());
+            transactionRepository.save(tx);
+
+            ledgerService.record(tx.getId(), account.getId(), "DEBIT", amount,
+                    account.getBalance(), "WITHDRAW", account.getId());
+
+            account.setMonthUsage(getMonthlyUsage(account.getId()));
+            return account;
+
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "작업 중 오류가 발생했습니다.");
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
         }
-
-        PayTransaction tx = new PayTransaction();
-        tx.setPayAccountId(account.getId());
-        tx.setTransactionType("WITHDRAW");
-        tx.setDirection("DEBIT");
-        tx.setAmount(amount);
-        tx.setOccurredAt(LocalDateTime.now());
-        transactionRepository.save(tx);
-
-        ledgerService.record(
-                tx.getId(),
-                account.getId(),
-                "DEBIT",
-                amount,
-                account.getBalance(),
-                "WITHDRAW",
-                account.getId()
-        );
-
-        account.setMonthUsage(getMonthlyUsage(account.getId()));
-        return account;
     }
 
     // 월 사용액 조회 (PAYMENT 거래만 집계)
@@ -205,41 +222,81 @@ public class WalletService {
         return trimmed.isEmpty() ? null : trimmed;
     }
 
+//    @Transactional
+//    public PayAccount confirmCharge(ChargeConfirmRequest request) {
+//        RLock lock = redissonClient.getLock(LOCK_KEY_PREFIX + request.payUserId());
+//        try {
+//            if (!lock.tryLock(10, 20, TimeUnit.SECONDS)) { // 충전은 중요하므로 좀 더 여유있게 대기
+//                throw new ApiException(HttpStatus.TOO_MANY_REQUESTS, "충전 처리가 이미 진행 중입니다.");
+//            }
+//
+//            // 1. 토스 서버 승인 요청
+//            tossPaymentClient.confirmPayment(request.paymentKey(), request.orderId(), request.amount());
+//
+//            // 2. 지갑 조회 및 잔액 증가
+//            PayAccount account = findAccountOrThrow(request.payUserId());
+//            account.addBalance(request.amount());
+//
+//            // 3. 내역 저장
+//            PayTransaction tx = new PayTransaction();
+//            tx.setPayAccountId(account.getId());
+//            tx.setTransactionType("CHARGE");
+//            tx.setDirection("CREDIT");
+//            tx.setAmount(request.amount());
+//            tx.setOccurredAt(LocalDateTime.now());
+//            transactionRepository.save(tx);
+//
+//            ledgerService.record(tx.getId(), account.getId(), "CREDIT", request.amount(),
+//                    account.getBalance(), "TOSS_CHARGE", account.getId());
+//
+//            return account;
+//
+//        } catch (InterruptedException e) {
+//            Thread.currentThread().interrupt();
+//            throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "충전 확인 중 오류가 발생했습니다.");
+//        } finally {
+//            if (lock.isHeldByCurrentThread()) {
+//                lock.unlock();
+//            }
+//        }
+//    }
+
     @Transactional
     public PayAccount confirmCharge(ChargeConfirmRequest request) {
-        // 1. 토스 서버 승인 요청 (트랜잭션)
-        tossPaymentClient.confirmPayment(request.paymentKey(), request.orderId(), request.amount());
-
-        // 2. 유저 지갑 조회 (기존 방식인 findAccountOrThrow 활용)
-        PayAccount account = findAccountOrThrow(request.payUserId());
-
-        // 3. 지갑 잔액 찐으로 증가!
+        RLock lock = redissonClient.getLock(LOCK_KEY_PREFIX + request.payUserId());
         try {
+            if (!lock.tryLock(10, 20, TimeUnit.SECONDS)) { // 충전은 중요하므로 좀 더 여유있게 대기
+                throw new ApiException(HttpStatus.TOO_MANY_REQUESTS, "충전 처리가 이미 진행 중입니다.");
+            }
+
+            // 1. 토스 서버 승인 요청
+            tossPaymentClient.confirmPayment(request.paymentKey(), request.orderId(), request.amount());
+
+            // 2. 지갑 조회 및 잔액 증가
+            PayAccount account = findAccountOrThrow(request.payUserId());
             account.addBalance(request.amount());
-        } catch (IllegalArgumentException ex) {
-            throw new ApiException(HttpStatus.BAD_REQUEST, ex.getMessage());
+
+            // 3. 내역 저장
+            PayTransaction tx = new PayTransaction();
+            tx.setPayAccountId(account.getId());
+            tx.setTransactionType("CHARGE");
+            tx.setDirection("CREDIT");
+            tx.setAmount(request.amount());
+            tx.setOccurredAt(LocalDateTime.now());
+            transactionRepository.save(tx);
+
+            ledgerService.record(tx.getId(), account.getId(), "CREDIT", request.amount(),
+                    account.getBalance(), "TOSS_CHARGE", account.getId());
+
+            return account;
+
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "충전 확인 중 오류가 발생했습니다.");
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
         }
-
-        // 4. 이용 내역(영수증) 작성 (기존 코드 스타일과 완벽 통일)
-        PayTransaction tx = new PayTransaction();
-        tx.setPayAccountId(account.getId()); // 객체 대신 ID 값 세팅!
-        tx.setTransactionType("CHARGE");     // 충전 타입
-        tx.setDirection("CREDIT");           // 입금
-        tx.setAmount(request.amount());
-        tx.setOccurredAt(LocalDateTime.now());
-        transactionRepository.save(tx);
-
-        // 5. 기존 시스템처럼 원장(Ledger) 장부에도 기록 추가!
-        ledgerService.record(
-                tx.getId(),
-                account.getId(),
-                "CREDIT",
-                request.amount(),
-                account.getBalance(),
-                "TOSS_CHARGE", // 토스 충전임을 명시
-                account.getId()
-        );
-
-        return account;
     }
 }

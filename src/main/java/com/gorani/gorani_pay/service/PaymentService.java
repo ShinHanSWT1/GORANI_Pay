@@ -39,9 +39,9 @@ public class PaymentService {
 
     @Transactional
     public PayPayment createPayment(CreatePaymentRequest request, String idempotencyKey) {
-        Optional<PayIdempotency> existing = idempotencyService.findByKey(idempotencyKey);
+        Optional<String> existing = idempotencyService.findByKey(idempotencyKey);
         if (existing.isPresent()) {
-            return JsonUtil.fromJson(existing.get().getResponsePayload(), PayPayment.class);
+            return JsonUtil.fromJson(existing.get(), PayPayment.class);
         }
 
         PayAccount account = accountRepository.findById(request.getPayAccountId())
@@ -74,9 +74,9 @@ public class PaymentService {
 
     @Transactional
     public PayPayment completePayment(Long paymentId, String idempotencyKey) {
-        Optional<PayIdempotency> existing = idempotencyService.findByKey(idempotencyKey);
+        Optional<String> existing = idempotencyService.findByKey(idempotencyKey);
         if (existing.isPresent()) {
-            return JsonUtil.fromJson(existing.get().getResponsePayload(), PayPayment.class);
+            return JsonUtil.fromJson(existing.get(), PayPayment.class);
         }
 
         PayPayment payment = getPayment(paymentId);
@@ -140,9 +140,9 @@ public class PaymentService {
 
     @Transactional
     public PayPayment refund(Long paymentId, RefundRequest request, String idempotencyKey) {
-        Optional<PayIdempotency> existing = idempotencyService.findByKey(idempotencyKey);
+        Optional<String> existing = idempotencyService.findByKey(idempotencyKey);
         if (existing.isPresent()) {
-            return JsonUtil.fromJson(existing.get().getResponsePayload(), PayPayment.class);
+            return JsonUtil.fromJson(existing.get(), PayPayment.class);
         }
 
         PayPayment payment = getPayment(paymentId);
