@@ -36,6 +36,11 @@ spring:
 
 app:
   cdn-url: https://${AWS_BUCKET_NAME}.s3.ap-northeast-2.amazonaws.com
+  auth:
+    internal-token: ${INTERNAL_TOKEN}
+  toss:
+    secret-key: ${TOSS_SECRET_KEY}
+    url: https://api.tosspayments.com/v1/payments/confirm
 
 cloud:
   aws:

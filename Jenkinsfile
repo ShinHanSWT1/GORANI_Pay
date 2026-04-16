@@ -91,7 +91,8 @@ pipeline {
                         string(credentialsId: 'kakao-client-id-dev', variable: 'KAKAO_CLIENT_ID'),
                         string(credentialsId: 'kakao-client-secret-dev', variable: 'KAKAO_CLIENT_SECRET'),
                         string(credentialsId: 'aws-s3-access-key', variable: 'AWS_ACCESS_KEY'),
-                        string(credentialsId: 'aws-s3-secret-key', variable: 'AWS_SECRET_KEY')
+                        string(credentialsId: 'toss-secret-key', variable: 'TOSS_SECRET_KEY'),
+                        string(credentialsId: 'internal-token-dev', variable: 'INTERNAL_TOKEN')
                     ]) {
                         script {
                             sh '''
@@ -121,6 +122,8 @@ pipeline {
                                         -e AWS_ACCESS_KEY="$AWS_ACCESS_KEY" \
                                         -e AWS_SECRET_KEY="$AWS_SECRET_KEY" \
                                         -e AWS_BUCKET_NAME=${AWS_BUCKET_NAME} \
+                                        -e TOSS_SECRET_KEY=${TOSS_SECRET_KEY} \
+                                        -e INTERNAL_TOKEN=${INTERNAL_TOKEN} \
                                         ${FULL_IMAGE_TAG}
 
                                     sudo podman image prune -f

@@ -3,8 +3,14 @@ package com.gorani.gorani_pay.client;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.*;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
+import org.springframework.web.client.HttpStatusCodeException;
+import org.springframework.web.client.ResourceAccessException;
+import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 
 import java.nio.charset.StandardCharsets;
@@ -16,7 +22,7 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class TossPaymentClient {
 
-    private final RestTemplate restTemplate; // Bean으로 등록되어 있어야 합니다.
+    private final RestTemplate restTemplate;
 
     @Value("${app.toss.secret-key}")
     private String secretKey;
@@ -25,7 +31,6 @@ public class TossPaymentClient {
     private String tossUrl;
 
     public void confirmPayment(String paymentKey, String orderId, Integer amount) {
-        // 1. 토스 API 인증 헤더 만들기 (Basic 인증: 시크릿키 뒤에 콜론(:)을 붙여 Base64 인코딩)
         String authString = secretKey + ":";
         String encodedAuth = Base64.getEncoder().encodeToString(authString.getBytes(StandardCharsets.UTF_8));
 
@@ -33,7 +38,6 @@ public class TossPaymentClient {
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.set("Authorization", "Basic " + encodedAuth);
 
-        // 2. 요청 바디 만들기
         Map<String, Object> body = Map.of(
                 "paymentKey", paymentKey,
                 "orderId", orderId,
@@ -43,12 +47,21 @@ public class TossPaymentClient {
         HttpEntity<Map<String, Object>> requestEntity = new HttpEntity<>(body, headers);
 
         try {
-            // 3. 토스 서버로 결제 승인 요청 날리기
             ResponseEntity<String> response = restTemplate.postForEntity(tossUrl, requestEntity, String.class);
-            log.info("토스 결제 승인 성공: {}", response.getBody());
-        } catch (Exception e) {
-            log.error("토스 결제 승인 실패", e);
-            throw new RuntimeException("토스페이먼츠 결제 승인에 실패했습니다."); // 커스텀 예외로 변경 추천
+            log.info("토스 결제 승인 성공. orderId={}, amount={}, responseBody={}", orderId, amount, response.getBody());
+        } catch (HttpStatusCodeException e) {
+            String responseBody = e.getResponseBodyAsString();
+            log.error("토스 결제 승인 실패(응답). orderId={}, amount={}, statusCode={}, responseBody={}",
+                    orderId, amount, e.getStatusCode(), responseBody, e);
+            throw new RuntimeException("토스 결제 승인 실패: status=" + e.getStatusCode() + ", body=" + responseBody);
+        } catch (ResourceAccessException e) {
+            log.error("토스 결제 승인 실패(네트워크). orderId={}, amount={}, message={}",
+                    orderId, amount, e.getMessage(), e);
+            throw new RuntimeException("토스 결제 승인 실패: 네트워크 오류 - " + e.getMessage());
+        } catch (RestClientException e) {
+            log.error("토스 결제 승인 실패(클라이언트). orderId={}, amount={}, message={}",
+                    orderId, amount, e.getMessage(), e);
+            throw new RuntimeException("토스 결제 승인 실패: 클라이언트 오류 - " + e.getMessage());
         }
     }
 }
