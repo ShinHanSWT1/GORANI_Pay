@@ -60,9 +60,30 @@ public class PayAccount {
         this.updatedAt = LocalDateTime.now();
     }
 
+    public void addPoints(Long amount) {
+        validatePositivePointAmount(amount);
+        this.points += amount;
+        this.updatedAt = LocalDateTime.now();
+    }
+
+    public void deductPoints(Long amount) {
+        validatePositivePointAmount(amount);
+        if (this.points < amount) {
+            throw new IllegalArgumentException("Insufficient points");
+        }
+        this.points -= amount;
+        this.updatedAt = LocalDateTime.now();
+    }
+
     private void validatePositiveAmount(Integer amount) {
         if (amount == null || amount <= 0) {
             throw new IllegalArgumentException("Amount must be positive");
+        }
+    }
+
+    private void validatePositivePointAmount(Long amount) {
+        if (amount == null || amount <= 0) {
+            throw new IllegalArgumentException("Point amount must be positive");
         }
     }
 

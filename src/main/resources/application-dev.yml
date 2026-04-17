@@ -38,3 +38,5 @@ logging:
 app:
   upload:
     path: /app/uploads
+  checkout:
+    base-url: https://dev-gorani.lab.terminal-lab.kr/pay

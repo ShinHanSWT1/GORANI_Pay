@@ -145,4 +145,14 @@ public class PayApiController {
         PayAccount updatedAccount = walletService.confirmCharge(request);
         return org.springframework.http.ResponseEntity.ok(updatedAccount);
     }
+
+    @PostMapping("/points/earn")
+    public PayAccount earnPoints(
+            @RequestHeader("Idempotency-Key") String key,
+            @Valid @RequestBody EarnPointRequest request
+    ) {
+        log.info("[Pay] point earn request - key={}, payUserId={}, amount={}, category={}",
+                key, request.getPayUserId(), request.getAmount(), request.getCategory());
+        return walletService.earnPoints(request, key);
+    }
 }

@@ -72,7 +72,9 @@ public class PaymentService {
         return saved;
     }
 
-    @Transactional
+    // 잔액 부족(ApiException)은 상위 checkout 서비스에서 자동충전 후 재시도하므로
+    // 여기서 트랜잭션 전체를 rollback-only로 마킹하지 않도록 noRollbackFor를 적용한다.
+    @Transactional(noRollbackFor = ApiException.class)
     public PayPayment completePayment(Long paymentId, String idempotencyKey) {
         Optional<PayIdempotency> existing = idempotencyService.findByKey(idempotencyKey);
         if (existing.isPresent()) {
@@ -92,25 +94,42 @@ public class PaymentService {
 
         PayAccount account = accountRepository.findByPayUserId(payment.getPayUserId())
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Account not found"));
-        if (account.getBalance() < payment.getAmount()) {
-            throw new ApiException(HttpStatus.BAD_REQUEST, "Insufficient balance");
-        }
+
+        // 포인트/쿠폰 할인 적용 후 실제 지갑에서 차감할 금액을 계산한다.
+        int pointAmount = payment.getPointAmount() == null ? 0 : payment.getPointAmount();
+        int payableAmount = getPayableAmount(payment, pointAmount, account);
 
         PayTransaction tx = new PayTransaction();
         tx.setPayAccountId(account.getId());
         tx.setPayPaymentId(payment.getId());
         tx.setTransactionType("PAYMENT");
         tx.setDirection("DEBIT");
-        tx.setAmount(payment.getAmount());
+        tx.setAmount(payableAmount);
+        // 외부 주문번호 prefix로 결제 유형을 태깅해 상위 서비스에서 이용내역 라벨링에 활용한다.
+        tx.setCategory(resolvePaymentCategory(payment));
         tx.setOccurredAt(LocalDateTime.now());
         transactionRepository.save(tx);
 
-        account.deductBalance(payment.getAmount());
+        if (pointAmount > 0) {
+            // 포인트 사용 내역을 별도 트랜잭션으로 남겨 추적성을 확보한다.
+            PayTransaction pointTx = new PayTransaction();
+            pointTx.setPayAccountId(account.getId());
+            pointTx.setPayPaymentId(payment.getId());
+            pointTx.setTransactionType("POINT_USE");
+            pointTx.setDirection("DEBIT");
+            pointTx.setAmount(pointAmount);
+            pointTx.setCategory("POINT");
+            pointTx.setOccurredAt(LocalDateTime.now());
+            transactionRepository.save(pointTx);
+            account.deductPoints((long) pointAmount);
+        }
+
+        account.deductBalance(payableAmount);
         ledgerService.record(
                 tx.getId(),
                 account.getId(),
                 "DEBIT",
-                payment.getAmount(),
+                payableAmount,
                 account.getBalance(),
                 "PAYMENT",
                 payment.getId()
@@ -123,6 +142,22 @@ public class PaymentService {
         idempotencyService.save(idempotencyKey, payment.getExternalOrderId(), JsonUtil.toJson(payment), "COMPLETED");
         webhookLogService.record("PAYMENT_COMPLETED", payment.getExternalOrderId(), payment);
         return payment;
+    }
+
+    private static int getPayableAmount(PayPayment payment, int pointAmount, PayAccount account) {
+        int couponDiscountAmount = payment.getCouponDiscountAmount() == null ? 0 : payment.getCouponDiscountAmount();
+        int payableAmount = payment.getAmount() - pointAmount - couponDiscountAmount;
+        if (payableAmount < 0) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Payable amount cannot be negative");
+        }
+
+        if (pointAmount > 0 && account.getPoints() < pointAmount) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Insufficient points");
+        }
+        if (account.getBalance() < payableAmount) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Insufficient balance");
+        }
+        return payableAmount;
     }
 
     @Transactional
@@ -241,5 +276,13 @@ public class PaymentService {
     private boolean isExpired(PayPayment payment) {
         return payment.getCreatedAt() != null
                 && payment.getCreatedAt().isBefore(LocalDateTime.now().minusMinutes(PAYMENT_EXPIRATION_MINUTES));
+    }
+
+    private String resolvePaymentCategory(PayPayment payment) {
+        String externalOrderId = payment.getExternalOrderId();
+        if (externalOrderId != null && externalOrderId.startsWith("ECO-COUPON-")) {
+            return "COUPON";
+        }
+        return "GENERAL";
     }
 }

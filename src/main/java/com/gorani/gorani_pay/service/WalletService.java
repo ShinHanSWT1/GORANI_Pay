@@ -3,7 +3,9 @@ package com.gorani.gorani_pay.service;
 import com.gorani.gorani_pay.client.TossPaymentClient;
 import com.gorani.gorani_pay.dto.ChargeConfirmRequest;
 import com.gorani.gorani_pay.dto.CreateAccountRequest;
+import com.gorani.gorani_pay.dto.EarnPointRequest;
 import com.gorani.gorani_pay.entity.PayAccount;
+import com.gorani.gorani_pay.entity.PayIdempotency;
 import com.gorani.gorani_pay.entity.PayLedger;
 import com.gorani.gorani_pay.entity.PayTransaction;
 import com.gorani.gorani_pay.entity.PayUser;
@@ -12,8 +14,8 @@ import com.gorani.gorani_pay.repository.PayAccountRepository;
 import com.gorani.gorani_pay.repository.PayLedgerRepository;
 import com.gorani.gorani_pay.repository.PayTransactionRepository;
 import com.gorani.gorani_pay.repository.PayUserRepository;
+import com.gorani.gorani_pay.util.JsonUtil;
 import lombok.RequiredArgsConstructor;
-import org.flywaydb.core.api.ErrorCode;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -22,6 +24,7 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.YearMonth;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.ThreadLocalRandom;
 
 // 지갑 도메인 서비스
@@ -42,6 +45,8 @@ public class WalletService {
     private final PayUserRepository payUserRepository;
     // Toss PG 연동
     private final TossPaymentClient tossPaymentClient;
+    // 멱등 처리 서비스
+    private final IdempotencyService idempotencyService;
 
     // 계좌 생성
     public PayAccount createAccount(CreateAccountRequest request) {
@@ -238,6 +243,39 @@ public class WalletService {
                 account.getBalance(),
                 "TOSS_CHARGE", // 토스 충전임을 명시
                 account.getId()
+        );
+
+        return account;
+    }
+
+    // 포인트 적립 (탄소/미션 리워드)
+    public PayAccount earnPoints(EarnPointRequest request, String idempotencyKey) {
+        Optional<PayIdempotency> existing = idempotencyService.findByKey(idempotencyKey);
+        if (existing.isPresent()) {
+            return JsonUtil.fromJson(existing.get().getResponsePayload(), PayAccount.class);
+        }
+
+        PayAccount account = findAccountOrThrow(request.getPayUserId());
+        try {
+            account.addPoints(request.getAmount().longValue());
+        } catch (IllegalArgumentException ex) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, ex.getMessage());
+        }
+
+        PayTransaction pointTx = new PayTransaction();
+        pointTx.setPayAccountId(account.getId());
+        pointTx.setTransactionType("POINT_EARN");
+        pointTx.setDirection("CREDIT");
+        pointTx.setAmount(request.getAmount());
+        pointTx.setCategory(request.getCategory());
+        pointTx.setOccurredAt(LocalDateTime.now());
+        transactionRepository.save(pointTx);
+
+        idempotencyService.save(
+                idempotencyKey,
+                request.getExternalOrderId(),
+                JsonUtil.toJson(account),
+                "COMPLETED"
         );
 
         return account;

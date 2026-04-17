@@ -37,6 +37,8 @@ public class SecurityConfig {
                 }))
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
+                        // 스프링 기본 에러 디스패치 경로는 인증 없이 접근 가능해야 예외 응답이 정상 반환된다.
+                        .requestMatchers("/error", "/error/**").permitAll()
                         .requestMatchers("/actuator/**").permitAll()
                         .requestMatchers("/pay/webhooks/**").permitAll()
                         // 모든 /pay/** 요청은 InternalTokenFilter에서 검증하므로 permitAll() 후 필터에서 처리
