@@ -10,4 +10,6 @@ public interface PayCheckoutSessionRepository extends JpaRepository<PayCheckoutS
     Optional<PayCheckoutSession> findBySessionToken(String sessionToken);
 
     Optional<PayCheckoutSession> findByOneTimeToken(String oneTimeToken);
+
+    Optional<PayCheckoutSession> findByMerchantCodeAndExternalOrderId(String merchantCode, String externalOrderId);
 }

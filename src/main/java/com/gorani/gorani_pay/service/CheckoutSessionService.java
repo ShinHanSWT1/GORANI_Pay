@@ -9,12 +9,14 @@ import com.gorani.gorani_pay.dto.CreatePaymentRequest;
 import com.gorani.gorani_pay.entity.PayAccount;
 import com.gorani.gorani_pay.entity.PayCheckoutChannel;
 import com.gorani.gorani_pay.entity.PayCheckoutEntryMode;
+import com.gorani.gorani_pay.entity.PayCheckoutIntegrationType;
 import com.gorani.gorani_pay.entity.PayCheckoutSession;
 import com.gorani.gorani_pay.entity.PayCheckoutSessionStatus;
 import com.gorani.gorani_pay.entity.PayPayment;
 import com.gorani.gorani_pay.exception.ApiException;
 import com.gorani.gorani_pay.repository.PayAccountRepository;
 import com.gorani.gorani_pay.repository.PayCheckoutSessionRepository;
+import com.gorani.gorani_pay.repository.PayUserRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -38,6 +40,8 @@ public class CheckoutSessionService {
 
     private final PayCheckoutSessionRepository payCheckoutSessionRepository;
     private final PayAccountRepository payAccountRepository;
+    private final PayUserRepository payUserRepository;
+    private final CheckoutMerchantPolicyService checkoutMerchantPolicyService;
     private final PaymentService paymentService;
     private final WalletService walletService;
 
@@ -46,21 +50,33 @@ public class CheckoutSessionService {
 
     @Transactional
     public CheckoutSessionResponse createSession(CreateCheckoutSessionRequest request) {
-        // 결제 세션은 반드시 유효한 지갑(계좌)과 연결되어야 한다.
-        PayAccount account = payAccountRepository.findByPayUserId(request.getPayUserId())
-                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Account not found"));
         PayCheckoutEntryMode resolvedEntryMode = resolveEntryMode(request.getEntryMode());
+        PayCheckoutChannel resolvedChannel = resolveChannel(request.getChannel(), resolvedEntryMode);
+        PayCheckoutIntegrationType integrationType = resolveIntegrationType(request.getIntegrationType());
+        checkoutMerchantPolicyService.validate(request.getMerchantCode(), integrationType);
 
-        // 코드 제시용 세션(IN_APP_CODE)은 금액 0 허용, 즉시결제 세션은 1원 이상만 허용한다.
+        PayCheckoutSession existingSession = payCheckoutSessionRepository
+                .findByMerchantCodeAndExternalOrderId(request.getMerchantCode(), request.getExternalOrderId())
+                .orElse(null);
+        if (existingSession != null) {
+            log.info("[Pay] 기존 체크아웃 세션 재사용. token={}, merchant={}, externalOrderId={}",
+                    existingSession.getSessionToken(), existingSession.getMerchantCode(), existingSession.getExternalOrderId());
+            return toResponse(existingSession);
+        }
+
+        // IN_APP_CODE는 금액 0 허용, 그 외는 1원 이상 필수
         if (resolvedEntryMode != PayCheckoutEntryMode.IN_APP_CODE && (request.getAmount() == null || request.getAmount() < 1)) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "Amount must be greater than zero for merchant checkout");
         }
 
+        Long resolvedPayUserId = resolvePayUserId(request, integrationType);
+        Long resolvedPayAccountId = resolvePayAccountId(resolvedPayUserId);
+
         PayCheckoutSession session = new PayCheckoutSession();
         session.setSessionToken(UUID.randomUUID().toString().replace("-", ""));
         session.setMerchantCode(request.getMerchantCode());
-        session.setPayUserId(request.getPayUserId());
-        session.setPayAccountId(account.getId());
+        session.setPayUserId(resolvedPayUserId);
+        session.setPayAccountId(resolvedPayAccountId);
         session.setExternalOrderId(request.getExternalOrderId());
         session.setTitle(request.getTitle());
         session.setAmount(request.getAmount());
@@ -70,28 +86,24 @@ public class CheckoutSessionService {
         session.setSuccessUrl(request.getSuccessUrl());
         session.setFailUrl(request.getFailUrl());
         session.setEntryMode(resolvedEntryMode);
-        session.setChannel(resolveChannel(request.getChannel(), session.getEntryMode()));
+        session.setChannel(resolvedChannel);
+        session.setIntegrationType(integrationType);
         session.setStatus(PayCheckoutSessionStatus.CREATED);
         session.setExpiresAt(LocalDateTime.now().plusMinutes(SESSION_EXPIRE_MINUTES));
         session.setCreatedAt(LocalDateTime.now());
         session.setUpdatedAt(LocalDateTime.now());
 
-        // 코드 결제 모드에서는 스캔용 1회성 토큰을 함께 발급한다.
-        if (session.getEntryMode() == PayCheckoutEntryMode.IN_APP_CODE) {
+        // 코드 결제 진입 토큰 발급
+        if (resolvedEntryMode == PayCheckoutEntryMode.IN_APP_CODE) {
             session.setOneTimeToken("GP-CODE-" + UUID.randomUUID().toString().replace("-", "").substring(0, 16));
             session.setTokenExpiresAt(LocalDateTime.now().plusMinutes(CODE_TOKEN_EXPIRE_MINUTES));
         }
 
         payCheckoutSessionRepository.save(session);
-        log.info("[Pay] checkout session 생성 완료. token={}, merchant={}, payUserId={}, amount={}",
-                session.getSessionToken(), session.getMerchantCode(), session.getPayUserId(), session.getAmount());
+        log.info("[Pay] 체크아웃 세션 생성. token={}, merchant={}, integrationType={}, payUserId={}, amount={}",
+                session.getSessionToken(), session.getMerchantCode(), session.getIntegrationType(), session.getPayUserId(), session.getAmount());
 
-        return CheckoutSessionResponse.builder()
-                .sessionToken(session.getSessionToken())
-                .checkoutUrl(checkoutBaseUrl + "/pay/checkout/" + session.getSessionToken())
-                .status(session.getStatus().name())
-                .expiresAt(session.getExpiresAt())
-                .build();
+        return toResponse(session);
     }
 
     @Transactional
@@ -124,21 +136,19 @@ public class CheckoutSessionService {
         merchantSession.setFailUrl(request.getFailUrl());
         merchantSession.setEntryMode(PayCheckoutEntryMode.MERCHANT_REDIRECT);
         merchantSession.setChannel(resolveChannel(request.getChannel(), PayCheckoutEntryMode.MERCHANT_REDIRECT));
+        merchantSession.setIntegrationType(PayCheckoutIntegrationType.INTERNAL_TOKEN);
         merchantSession.setStatus(PayCheckoutSessionStatus.CREATED);
         merchantSession.setExpiresAt(LocalDateTime.now().plusMinutes(SESSION_EXPIRE_MINUTES));
         merchantSession.setCreatedAt(LocalDateTime.now());
         merchantSession.setUpdatedAt(LocalDateTime.now());
         payCheckoutSessionRepository.save(merchantSession);
 
-        // 사용자 결제코드는 매장 결제요청 생성 즉시 소모해 재사용을 방지한다.
         codeSession.consumeOneTimeToken();
-        log.info("[Pay] 코드 기반 결제 세션 생성 완료. merchantSessionToken={}, merchantCode={}, amount={}, payUserId={}",
+        log.info("[Pay] 코드 세션 교환 완료. merchantSessionToken={}, merchantCode={}, amount={}, payUserId={}",
                 merchantSession.getSessionToken(), merchantSession.getMerchantCode(), merchantSession.getAmount(), merchantSession.getPayUserId());
 
-        // 바코드/QR 결제는 즉시 승인형으로 처리한다.
-        // 매장 스캐너가 codeToken을 읽으면 사용자 추가 조작 없이 결제를 완료한다.
         CheckoutProcessResult processResult = processCheckout(merchantSession.getSessionToken(), true, null);
-        log.info("[Pay] 코드 기반 즉시 결제 처리 완료. merchantSessionToken={}, status={}, redirectUrl={}",
+        log.info("[Pay] 코드 세션 즉시 결제 완료. merchantSessionToken={}, status={}, redirectUrl={}",
                 merchantSession.getSessionToken(), processResult.status(), processResult.redirectUrl());
 
         return CheckoutSessionResponse.builder()
@@ -150,18 +160,50 @@ public class CheckoutSessionService {
     }
 
     @Transactional
+    public Long bindSessionOwner(String sessionToken, Long loginPayUserId) {
+        PayCheckoutSession session = getSessionByToken(sessionToken);
+
+        if (session.getStatus() != PayCheckoutSessionStatus.CREATED) {
+            return session.getPayUserId();
+        }
+
+        if (session.isExpired(LocalDateTime.now())) {
+            session.markExpired();
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Checkout session has expired");
+        }
+
+        if (session.getPayUserId() == null) {
+            Long accountId = resolvePayAccountId(loginPayUserId);
+            session.setPayUserId(loginPayUserId);
+            session.setPayAccountId(accountId);
+            session.setUpdatedAt(LocalDateTime.now());
+            log.info("[Pay] 세션 소유자 바인딩 완료. sessionToken={}, payUserId={}, payAccountId={}",
+                    sessionToken, loginPayUserId, accountId);
+            return loginPayUserId;
+        }
+
+        if (!session.getPayUserId().equals(loginPayUserId)) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "Checkout session owner mismatch");
+        }
+
+        return session.getPayUserId();
+    }
+
+    @Transactional
     public CheckoutPageView getPageView(String sessionToken) {
         PayCheckoutSession session = getSessionByToken(sessionToken);
 
-        // 페이지 진입 시 만료된 세션은 즉시 EXPIRED로 전환한다.
         if (session.getStatus() == PayCheckoutSessionStatus.CREATED && session.isExpired(LocalDateTime.now())) {
             session.markExpired();
+        }
+
+        if (session.getPayAccountId() == null) {
+            throw new ApiException(HttpStatus.UNAUTHORIZED, "Checkout session is not linked to payer");
         }
 
         PayAccount account = payAccountRepository.findById(session.getPayAccountId())
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Account not found"));
         int finalPayableAmount = Math.max(session.getAmount() - session.getPointAmount() - session.getCouponDiscountAmount(), 0);
-        // 보유 머니가 부족하면 submit 시 자동충전이 일어날 예상 금액을 미리 계산해 화면에 노출한다.
         int expectedAutoChargeAmount = Math.max(finalPayableAmount - account.getBalance(), 0);
 
         return CheckoutPageView.builder()
@@ -191,31 +233,28 @@ public class CheckoutSessionService {
         validateProcessable(session);
         validateCodeTokenIfNeeded(session, codeToken);
 
+        if (session.getPayUserId() == null || session.getPayAccountId() == null) {
+            throw new ApiException(HttpStatus.UNAUTHORIZED, "Checkout session is not linked to payer");
+        }
+
         try {
-            // 결제 엔진 기본 흐름: READY 생성 -> COMPLETE 확정
             PayPayment payment = paymentService.createPayment(toCreatePaymentRequest(session), "checkout-create-" + sessionToken);
             boolean autoCharged = false;
 
             try {
                 paymentService.completePayment(payment.getId(), "checkout-complete-" + sessionToken);
             } catch (ApiException ex) {
-                // 잔액 부족 + 자동충전 허용이면 부족분 충전 후 1회 재시도
                 if (ex.getStatus() == HttpStatus.BAD_REQUEST
                         && "Insufficient balance".equalsIgnoreCase(ex.getMessage())
                         && autoChargeIfInsufficient) {
-                    log.info("[Pay] checkout 잔액 부족 감지. token={}, paymentId={}, autoChargeIfInsufficient=true",
-                            sessionToken, payment.getId());
+                    log.info("[Pay] 잔액 부족 자동충전 시작. token={}, paymentId={}", sessionToken, payment.getId());
                     PayAccount account = payAccountRepository.findById(session.getPayAccountId())
                             .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Account not found"));
                     int shortage = Math.max(session.getAmount() - account.getBalance(), 0);
                     if (shortage > 0) {
-                        log.info("[Pay] checkout 자동충전 실행. token={}, payUserId={}, shortage={}",
-                                sessionToken, session.getPayUserId(), shortage);
                         walletService.charge(session.getPayUserId(), shortage);
                         autoCharged = true;
                     }
-                    log.info("[Pay] checkout 자동충전 후 결제 재시도. token={}, paymentId={}",
-                            sessionToken, payment.getId());
                     paymentService.completePayment(payment.getId(), "checkout-complete-retry-" + sessionToken);
                 } else {
                     throw ex;
@@ -223,7 +262,7 @@ public class CheckoutSessionService {
             }
 
             session.markCompleted(payment.getId(), autoCharged);
-            log.info("[Pay] checkout 결제 완료. token={}, paymentId={}, autoChargeUsed={}",
+            log.info("[Pay] 체크아웃 결제 완료. token={}, paymentId={}, autoChargeUsed={}",
                     sessionToken, payment.getId(), autoCharged);
 
             String redirectUrl = UriComponentsBuilder.fromUriString(session.getSuccessUrl())
@@ -239,9 +278,9 @@ public class CheckoutSessionService {
                     .status("COMPLETED")
                     .build();
         } catch (Exception ex) {
-            String errorMessage = ex.getMessage() == null ? "결제 처리 중 오류가 발생했습니다." : ex.getMessage();
+            String errorMessage = ex.getMessage() == null ? "결제 처리 중 오류 발생" : ex.getMessage();
             session.markFailed(errorMessage);
-            log.error("[Pay] checkout 결제 실패. token={}, message={}", sessionToken, errorMessage, ex);
+            log.error("[Pay] 체크아웃 결제 실패. token={}, message={}", sessionToken, errorMessage, ex);
 
             String redirectUrl = UriComponentsBuilder.fromUriString(session.getFailUrl())
                     .queryParam("orderId", session.getExternalOrderId())
@@ -282,7 +321,6 @@ public class CheckoutSessionService {
             throw new ApiException(HttpStatus.BAD_REQUEST, "Invalid code token");
         }
 
-        // 1회성 토큰은 서버 검증 직후 바로 소모한다.
         session.consumeOneTimeToken();
         log.info("[Pay] 코드 토큰 검증 완료. sessionToken={}", session.getSessionToken());
     }
@@ -290,6 +328,28 @@ public class CheckoutSessionService {
     private PayCheckoutSession getSessionByToken(String sessionToken) {
         return payCheckoutSessionRepository.findBySessionToken(sessionToken)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Checkout session not found"));
+    }
+
+    @Transactional(readOnly = true)
+    public Long getSessionPayUserId(String sessionToken) {
+        PayCheckoutSession session = getSessionByToken(sessionToken);
+        return session.getPayUserId();
+    }
+
+    @Transactional(readOnly = true)
+    public boolean requiresPayLogin(String sessionToken) {
+        PayCheckoutSession session = getSessionByToken(sessionToken);
+
+        if (session.getPayUserId() == null || session.getPayAccountId() == null) {
+            return true;
+        }
+
+        if (session.getIntegrationType() == null) {
+            return true;
+        }
+
+        return session.getIntegrationType() == PayCheckoutIntegrationType.PAY_LOGIN
+                || session.getIntegrationType() == PayCheckoutIntegrationType.OAUTH;
     }
 
     private CreatePaymentRequest toCreatePaymentRequest(PayCheckoutSession session) {
@@ -335,8 +395,58 @@ public class CheckoutSessionService {
         }
     }
 
+    private PayCheckoutIntegrationType resolveIntegrationType(String rawIntegrationType) {
+        if (rawIntegrationType == null || rawIntegrationType.isBlank()) {
+            return PayCheckoutIntegrationType.INTERNAL_TOKEN;
+        }
+        try {
+            return PayCheckoutIntegrationType.valueOf(rawIntegrationType.toUpperCase());
+        } catch (IllegalArgumentException ex) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Unsupported integrationType");
+        }
+    }
+
+    private Long resolvePayUserId(CreateCheckoutSessionRequest request, PayCheckoutIntegrationType integrationType) {
+        if (request.getPayUserId() != null) {
+            return request.getPayUserId();
+        }
+        if (request.getMerchantUserKey() != null && !request.getMerchantUserKey().isBlank()) {
+            try {
+                Long externalUserId = Long.parseLong(request.getMerchantUserKey());
+                return payUserRepository.findByExternalUserId(externalUserId)
+                        .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Pay user not linked"))
+                        .getId();
+            } catch (NumberFormatException ex) {
+                throw new ApiException(HttpStatus.BAD_REQUEST, "merchantUserKey format is invalid");
+            }
+        }
+
+        if (integrationType == PayCheckoutIntegrationType.PAY_LOGIN || integrationType == PayCheckoutIntegrationType.OAUTH) {
+            return null;
+        }
+
+        throw new ApiException(HttpStatus.BAD_REQUEST, "payUserId or merchantUserKey is required");
+    }
+
+    private Long resolvePayAccountId(Long payUserId) {
+        if (payUserId == null) {
+            return null;
+        }
+        PayAccount account = payAccountRepository.findByPayUserId(payUserId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Account not found"));
+        return account.getId();
+    }
+
     private String buildQrPayload(PayCheckoutSession session) {
-        // QR에는 결제 세션 URL만 담아 서버에서 상세 데이터를 조회한다.
         return checkoutBaseUrl + "/pay/checkout/" + session.getSessionToken();
+    }
+
+    private CheckoutSessionResponse toResponse(PayCheckoutSession session) {
+        return CheckoutSessionResponse.builder()
+                .sessionToken(session.getSessionToken())
+                .checkoutUrl(checkoutBaseUrl + "/pay/checkout/" + session.getSessionToken())
+                .status(session.getStatus().name())
+                .expiresAt(session.getExpiresAt())
+                .build();
     }
 }

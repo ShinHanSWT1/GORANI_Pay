@@ -31,13 +31,13 @@ public class PayCheckoutSession {
     @Column(name = "merchant_code", nullable = false, length = 50)
     private String merchantCode;
 
-    @Column(name = "pay_user_id", nullable = false)
+    @Column(name = "pay_user_id")
     private Long payUserId;
 
-    @Column(name = "pay_account_id", nullable = false)
+    @Column(name = "pay_account_id")
     private Long payAccountId;
 
-    @Column(name = "external_order_id", nullable = false, unique = true, length = 80)
+    @Column(name = "external_order_id", nullable = false, length = 80)
     private String externalOrderId;
 
     @Column(nullable = false, length = 120)
@@ -68,6 +68,10 @@ public class PayCheckoutSession {
     @Enumerated(EnumType.STRING)
     @Column(name = "channel", nullable = false, length = 20)
     private PayCheckoutChannel channel = PayCheckoutChannel.REDIRECT;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "integration_type", nullable = false, length = 30)
+    private PayCheckoutIntegrationType integrationType = PayCheckoutIntegrationType.INTERNAL_TOKEN;
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)
@@ -119,7 +123,7 @@ public class PayCheckoutSession {
         this.updatedAt = LocalDateTime.now();
     }
 
-    // 코드 결제 토큰은 1회성으로 사용되므로 최초 승인 시점에 즉시 소모한다.
+    // 코드 결제 토큰 일회성 처리
     public void consumeOneTimeToken() {
         this.oneTimeToken = null;
         this.tokenExpiresAt = LocalDateTime.now();

@@ -30,6 +30,12 @@ management:
     redis:
       host: ${REDIS_HOST}
       port: ${REDIS_PORT}
+  security:
+    oauth2:
+      client:
+        registration:
+          kakao:
+            redirect-uri: "https://dev-gorani.lab.terminal-lab.kr/pay/login/oauth2/code/kakao"
 
 logging:
   level:

@@ -27,6 +27,12 @@ management:
 #    redis:
 #      host: prod-redis
 #      port: 6379
+  security:
+    oauth2:
+      client:
+        registration:
+          kakao:
+            redirect-uri: "https://prod-gorani.lab.terminal-lab.kr/pay/login/oauth2/code/kakao"
 
 logging:
   level:

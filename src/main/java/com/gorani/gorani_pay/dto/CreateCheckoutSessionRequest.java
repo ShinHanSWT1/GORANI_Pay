@@ -13,8 +13,9 @@ public class CreateCheckoutSessionRequest {
     @NotBlank
     private String merchantCode;
 
-    @NotNull
     private Long payUserId;
+
+    private String merchantUserKey;
 
     @NotBlank
     private String externalOrderId;
@@ -40,9 +41,12 @@ public class CreateCheckoutSessionRequest {
     @NotBlank
     private String failUrl;
 
-    // 결제 진입 방식: IN_APP_CODE(코드/스캔 UI), MERCHANT_REDIRECT(즉시 승인 페이지)
+    // 결제 진입 방식
     private String entryMode;
 
-    // 결제 채널 힌트: BARCODE / QR / REDIRECT
+    // 결제 채널 힌트
     private String channel;
+
+    // 가맹점 연동 방식
+    private String integrationType;
 }

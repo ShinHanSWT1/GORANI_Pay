@@ -12,7 +12,7 @@ import lombok.Setter;
 
 import java.time.LocalDateTime;
 
-// 결제 사용자
+// 결제 사용자 엔티티
 @Entity
 @Table(name = "pay_users")
 @Getter
@@ -28,6 +28,12 @@ public class PayUser {
     // 외부 서비스 사용자 식별자
     @Column(name = "external_user_id", nullable = false)
     private Long externalUserId;
+
+    @Column(name = "oauth_provider", length = 20)
+    private String oauthProvider;
+
+    @Column(name = "oauth_user_id", length = 80)
+    private String oauthUserId;
 
     // 결제 사용자 이름
     @Column(name = "user_name", nullable = false, length = 50)

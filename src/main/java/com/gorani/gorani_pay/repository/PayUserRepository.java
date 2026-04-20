@@ -7,6 +7,9 @@ import java.util.Optional;
 
 public interface PayUserRepository extends JpaRepository<PayUser, Long> {
 
-    // 외부 사용자 식별자 기반 조회
     Optional<PayUser> findByExternalUserId(Long externalUserId);
+
+    Optional<PayUser> findByOauthProviderAndOauthUserId(String oauthProvider, String oauthUserId);
+
+    Optional<PayUser> findByEmailIgnoreCase(String email);
 }
