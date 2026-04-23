@@ -2,6 +2,8 @@ package com.gorani.gorani_pay.entity;
 
 import lombok.*;
 import jakarta.persistence.*;
+import org.springframework.data.annotation.CreatedDate;
+
 import java.time.LocalDateTime;
 
 @Entity
@@ -36,8 +38,10 @@ public class PayTransaction {
     private String category;
 
     @Column(name = "occurred_at", nullable = false)
+    @Builder.Default
     private LocalDateTime occurredAt = LocalDateTime.now();
 
+    @Builder.Default
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt = LocalDateTime.now();
 }
